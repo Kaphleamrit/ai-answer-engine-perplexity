@@ -3,7 +3,7 @@
 import { useState } from "react";
 import ReactMarkdown from 'react-markdown';
 
-
+ 
 type Message = {
   role: "user" | "ai";
   content: string;

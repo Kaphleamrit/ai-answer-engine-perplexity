@@ -5,7 +5,7 @@
 // Refer to Puppeteer docs here: https://pptr.dev/guides/what-is-puppeteer
 import Groq from "groq-sdk";
 import * as cheerio from "cheerio";
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer"; 
 
 const client = new Groq({
   apiKey: process.env["GROQ_API_KEY"], // This is the default and can be omitted
@@ -38,34 +38,34 @@ const getQuestion = (llmInput: string) => {
 };
 
 //puppeteer
-const googleSearch = async (query: string) => {
-  const browser = await puppeteer.launch();
-  const page = await browser.newPage();
+// const googleSearch = async (query: string) => {
+//   const browser = await puppeteer.launch();
+//   const page = await browser.newPage();
 
-  await page.goto("https://www.google.com", { waitUntil: "networkidle2" });
+//   await page.goto("https://www.google.com", { waitUntil: "networkidle2" });
 
-  await page.type('input[name="q"]', query);
+//   await page.type('input[name="q"]', query);
 
-  await Promise.all([
-    page.keyboard.press("Enter"),
-    page.waitForNavigation({ waitUntil: "networkidle2" }),
-  ]);
+//   await Promise.all([
+//     page.keyboard.press("Enter"),
+//     page.waitForNavigation({ waitUntil: "networkidle2" }),
+//   ]);
 
-  const results = await page.$$eval(".tF2C", els =>
-    els.slice(0, 5).map(el => {
-      const titleEl = el.querySelector("h3");
-      const linkEl = el.querySelector("a");
-      return {
-        title: titleEl ? titleEl.innerText : null,
-        link: linkEl ? linkEl.href : null,
-      };
-    })
-  );
-  console.log("Top 5 Results:");
-  console.log(results);
-  await browser.close();
-  return results;
-};
+//   const results = await page.$$eval(".tF2C", els =>
+//     els.slice(0, 5).map(el => {
+//       const titleEl = el.querySelector("h3");
+//       const linkEl = el.querySelector("a");
+//       return {
+//         title: titleEl ? titleEl.innerText : null,
+//         link: linkEl ? linkEl.href : null,
+//       };
+//     })
+//   );
+//   console.log("Top 5 Results:");
+//   console.log(results);
+//   await browser.close();
+//   return results;
+// };
 
 export async function POST(req: Request) {
   try {
@@ -79,8 +79,10 @@ export async function POST(req: Request) {
         scrapedArray.push(await scrapePage(url));
       }
     } else {
-      // TODO: Handle the case where no URL is found(google search)
-      await googleSearch(llmInput);
+      // TODO: Handle the case where no URL is f
+    // ound(google search)
+      // await googleSearch(llmInput);
+      scrapedArray.push("This feature is coming soon!");
     }
     const prompt = `
         You are an AI assistant. You have been provided with the following data, scraped from various websites:
