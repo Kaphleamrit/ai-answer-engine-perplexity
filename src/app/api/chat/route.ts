@@ -1,53 +1,106 @@
 import Groq from "groq-sdk";
 import * as cheerio from "cheerio";
 import axios from "axios";
+import { Redis } from "@upstash/redis";
 
-
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 
 const client = new Groq({
   apiKey: process.env["GROQ_API_KEY"],
 });
 
+// Scrape page with caching
 const scrapePage = async (url: string) => {
-  const $ = await cheerio.fromURL(url);
-  let text = $("body").text();
-  const trimmedText = text.replace(/\s+/g, " ");
-  return trimmedText;
-};
-
-const getURL = (llmInput: string) => {
   try {
-    const urlRegex = "/https?:\/\/[^\s]+/g";
-    const urlMatches = llmInput.match(urlRegex);
-
-    if (urlMatches && urlMatches.length > 0) {
-      return urlMatches;
-    } else {
-      return null;
+    const cachedContent = await redis.get(`scraped:${url}`);
+    if (cachedContent) {
+      console.log(`Cache hit for URL: ${url}`);
+      return cachedContent;
     }
+
+    const { data: html } = await axios.get(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
+      },
+    });
+    const $ = cheerio.load(html);
+    const text = $("body").text();
+    const trimmedText = text.replace(/\s+/g, " ").trim();
+
+    await redis.set(`scraped:${url}`, trimmedText, { ex: 3600 }); // Cache for 1 hour
+    console.log(`Cache miss. Scraped and stored URL: ${url}`);
+    return trimmedText;
   } catch (error) {
-    console.error(error);
+    console.error(`Error scraping URL: ${url}`, error);
+    throw error;
   }
 };
 
-const getQuestion = (llmInput: string) => {
-  return llmInput.replace("/https?:\/\/[^\s]+/g", "");
+// Extract URLs from input
+const getURL = (llmInput: string) => {
+  try {
+    const urlRegex = /https?:\/\/[^\s]+/g;
+    return llmInput.match(urlRegex) || null;
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
 };
 
+// Extract question from input (removes URLs)
+const getQuestion = (llmInput: string) => {
+  return llmInput.replace(/https?:\/\/[^\s]+/g, "").trim();
+};
+
+// Handle POST request
 export async function POST(req: Request) {
   try {
-    let llmInput = await req.json();
-    llmInput = llmInput.message;
+    const llmInput = await req.json();
+    const { message, conversationId } = llmInput;
+
+    if (!message) {
+      return new Response(JSON.stringify({ error: "Message is required." }), {
+        status: 400,
+      });
+    }
+
+    const question = getQuestion(message);
+    const urls = getURL(message);
+
+    // Fetch or initialize conversation
+    const conversationKey = `conversation:${conversationId || "default"}`;
+    const cachedConversation = await redis.get(conversationKey);
+
+    // Validate and parse the cached conversation data
+    let conversationHistory = [];
+    if (cachedConversation) {
+      try {
+        conversationHistory = JSON.parse(cachedConversation);
+        console.log(`Cache hit for conversation ID: ${conversationId}`);
+      } catch (error) {
+        console.error(
+          `Error parsing cached conversation for ID: ${conversationId}`
+        );
+        conversationHistory = [];
+      }
+    }
+
     let scrapedArray = [];
-    let urls = getURL(llmInput);
-    const question = getQuestion(llmInput);
     if (urls) {
-      for (let url of urls) {
-        scrapedArray.push(await scrapePage(url));
+      for (const url of urls) {
+        const scrapedContent = await scrapePage(url);
+        scrapedArray.push(scrapedContent);
       }
     } else {
       try {
-        const searchURL = `https://www.google.com/search?q=${encodeURIComponent(question)}`;
+        // Perform a Google search
+        const searchURL = `https://www.google.com/search?q=${encodeURIComponent(
+          question
+        )}`;
         const { data: html } = await axios.get(searchURL, {
           headers: {
             "User-Agent":
@@ -59,7 +112,6 @@ export async function POST(req: Request) {
         const results: string[] = [];
         $("a").each((_, element) => {
           const link = $(element).attr("href");
-          const title = $(element).text().trim();
 
           if (link && link.startsWith("/url?q=")) {
             const url = link.split("/url?q=")[1].split("&")[0];
@@ -71,19 +123,21 @@ export async function POST(req: Request) {
           if (results.length >= 5) return false;
         });
 
-        for (let url of results) {
-          scrapedArray.push(await scrapePage(url));
+        for (const url of results) {
+          const scrapedContent = await scrapePage(url);
+          scrapedArray.push(scrapedContent);
         }
       } catch (error) {
         console.error(error);
       }
     }
+
     const prompt = `
         You are an AI assistant. You have been provided with the following data, scraped from various websites:
 
         ${scrapedArray.join("\n\n")}
 
-        with URLs: ${urls}. Also you are an academic expert, you always cite your sources and base your response only on the
+        with URLs: ${urls || "None"}. Also you are an academic expert, you always cite your sources and base your response only on the
         context that you have been provided.
 
         Please answer the question: ${question}
@@ -97,8 +151,19 @@ export async function POST(req: Request) {
     });
 
     const llmOutput = res.choices[0].message.content;
-    return Response.json({ llmOutput });
+
+    // Append the new conversation to history
+    conversationHistory.push({ role: "user", content: question });
+    conversationHistory.push({ role: "assistant", content: llmOutput });
+
+    // Save updated conversation back to Redis
+    await redis.set(conversationKey, JSON.stringify(conversationHistory), {
+      ex: 86400, // Cache for 1 day
+    });
+
+    return new Response(JSON.stringify({ llmOutput }), { status: 200 });
   } catch (error) {
-    console.error(error);
+    console.error("Error in POST handler:", error);
+    return new Response("Internal Server Error", { status: 500 });
   }
 }

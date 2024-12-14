@@ -1,0 +1,20 @@
+const scrapePage = async (url: string) => {
+  try {
+    const cachedContent = await redis.get(`scraped:${url}`);
+    if (cachedContent) {
+      console.log(`Cache hit for URL: ${url}`);
+      return cachedContent;
+    }
+
+    const $ = await cheerio.fromURL(url);
+    let text = $("body").text();
+    const trimmedText = text.replace(/\s+/g, " ");
+
+    await redis.set(`scraped:${url}`, trimmedText, { ex: 3600 }); // Cache for 1 hour
+    console.log(`Cache miss. Scraped and stored URL: ${url}`);
+    return trimmedText;
+  } catch (error) {
+    console.error(`Error scraping URL: ${url}`, error);
+    throw error;
+  }
+};
