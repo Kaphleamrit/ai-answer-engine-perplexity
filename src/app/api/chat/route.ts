@@ -12,6 +12,9 @@ const client = new Groq({
   apiKey: process.env["GROQ_API_KEY"],
 });
 
+// Token limit for the model
+const TOKEN_LIMIT = 30000;
+
 // Scrape page with caching
 const scrapePage = async (url: string) => {
   try {
@@ -42,18 +45,33 @@ const scrapePage = async (url: string) => {
 
 // Extract URLs from input
 const getURL = (llmInput: string) => {
-  try {
-    const urlRegex = /https?:\/\/[^\s]+/g;
-    return llmInput.match(urlRegex) || null;
-  } catch (error) {
-    console.error(error);
-    return null;
-  }
+  const urlRegex = /https?:\/\/[^\s]+/g;
+  return llmInput.match(urlRegex) || null;
 };
 
 // Extract question from input (removes URLs)
 const getQuestion = (llmInput: string) => {
   return llmInput.replace(/https?:\/\/[^\s]+/g, "").trim();
+};
+
+// Function to truncate conversation history to stay within token limits
+const truncateConversationHistory = (
+  conversationHistory: { role: string; content: string }[],
+  maxTokens: number
+) => {
+  let tokenCount = 0;
+  const truncatedHistory = [];
+
+  for (let i = conversationHistory.length - 1; i >= 0; i--) {
+    const message = conversationHistory[i];
+    const tokens = message.content.length; // Approximate token count
+    if (tokenCount + tokens > maxTokens) break;
+
+    truncatedHistory.unshift(message);
+    tokenCount += tokens;
+  }
+
+  return truncatedHistory;
 };
 
 // Handle POST request
@@ -93,7 +111,8 @@ export async function POST(req: Request) {
     if (urls) {
       for (const url of urls) {
         const scrapedContent = await scrapePage(url);
-        scrapedArray.push(scrapedContent);
+        // Truncate each scraped content to 1000 characters to reduce size
+        scrapedArray.push(scrapedContent.substring(0, 1000));
       }
     } else {
       try {
@@ -125,12 +144,18 @@ export async function POST(req: Request) {
 
         for (const url of results) {
           const scrapedContent = await scrapePage(url);
-          scrapedArray.push(scrapedContent);
+          scrapedArray.push(scrapedContent.substring(0, 1000)); // Truncate to 1000 chars
         }
       } catch (error) {
         console.error(error);
       }
     }
+
+    // Truncate conversation history to stay within token limits
+    conversationHistory = truncateConversationHistory(
+      conversationHistory,
+      TOKEN_LIMIT - question.length - scrapedArray.join("\n\n").length
+    );
 
     const prompt = `
         You are an AI assistant. You have been provided with the following data, scraped from various websites:
@@ -142,6 +167,7 @@ export async function POST(req: Request) {
 
         Please answer the question: ${question}
         `;
+
     const res = await client.chat.completions.create({
       messages: [
         { role: "system", content: prompt },
@@ -152,9 +178,9 @@ export async function POST(req: Request) {
 
     const llmOutput = res.choices[0].message.content;
 
-    // Append the new conversation to history
+    // Append the new message and response to the conversation history
     conversationHistory.push({ role: "user", content: question });
-    conversationHistory.push({ role: "assistant", content: llmOutput });
+    conversationHistory.push({ role: "assistant", content: llmOutput ?? "" });
 
     // Save updated conversation back to Redis
     await redis.set(conversationKey, JSON.stringify(conversationHistory), {
