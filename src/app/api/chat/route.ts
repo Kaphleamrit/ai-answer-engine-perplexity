@@ -1,14 +1,11 @@
-// TODO: Implement the chat API with Groq and web scraping with Cheerio and Puppeteer
-// Refer to the Next.js Docs on how to read the Request body: https://nextjs.org/docs/app/building-your-application/routing/route-handlers
-// Refer to the Groq SDK here on how to use an LLM: https://www.npmjs.com/package/groq-sdk
-// Refer to the Cheerio docs here on how to parse HTML: https://cheerio.js.org/docs/basics/loading
-// Refer to Puppeteer docs here: https://pptr.dev/guides/what-is-puppeteer
 import Groq from "groq-sdk";
 import * as cheerio from "cheerio";
-import puppeteer from "puppeteer"; 
+import axios from "axios";
+
+
 
 const client = new Groq({
-  apiKey: process.env["GROQ_API_KEY"], // This is the default and can be omitted
+  apiKey: process.env["GROQ_API_KEY"],
 });
 
 const scrapePage = async (url: string) => {
@@ -37,36 +34,6 @@ const getQuestion = (llmInput: string) => {
   return llmInput.replace("/https?:\/\/[^\s]+/g", "");
 };
 
-//puppeteer
-// const googleSearch = async (query: string) => {
-//   const browser = await puppeteer.launch();
-//   const page = await browser.newPage();
-
-//   await page.goto("https://www.google.com", { waitUntil: "networkidle2" });
-
-//   await page.type('input[name="q"]', query);
-
-//   await Promise.all([
-//     page.keyboard.press("Enter"),
-//     page.waitForNavigation({ waitUntil: "networkidle2" }),
-//   ]);
-
-//   const results = await page.$$eval(".tF2C", els =>
-//     els.slice(0, 5).map(el => {
-//       const titleEl = el.querySelector("h3");
-//       const linkEl = el.querySelector("a");
-//       return {
-//         title: titleEl ? titleEl.innerText : null,
-//         link: linkEl ? linkEl.href : null,
-//       };
-//     })
-//   );
-//   console.log("Top 5 Results:");
-//   console.log(results);
-//   await browser.close();
-//   return results;
-// };
-
 export async function POST(req: Request) {
   try {
     let llmInput = await req.json();
@@ -79,20 +46,47 @@ export async function POST(req: Request) {
         scrapedArray.push(await scrapePage(url));
       }
     } else {
-      // TODO: Handle the case where no URL is f
-    // ound(google search)
-      // await googleSearch(llmInput);
-      scrapedArray.push("This feature is coming soon!");
+      try {
+        const searchURL = `https://www.google.com/search?q=${encodeURIComponent(question)}`;
+        const { data: html } = await axios.get(searchURL, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
+          },
+        });
+
+        const $ = cheerio.load(html);
+        const results: string[] = [];
+        $("a").each((_, element) => {
+          const link = $(element).attr("href");
+          const title = $(element).text().trim();
+
+          if (link && link.startsWith("/url?q=")) {
+            const url = link.split("/url?q=")[1].split("&")[0];
+            if (url) {
+              results.push(url);
+            }
+          }
+
+          if (results.length >= 5) return false;
+        });
+
+        for (let url of results) {
+          scrapedArray.push(await scrapePage(url));
+        }
+      } catch (error) {
+        console.error(error);
+      }
     }
     const prompt = `
         You are an AI assistant. You have been provided with the following data, scraped from various websites:
 
         ${scrapedArray.join("\n\n")}
 
-        Your task is to answer the question solely based on the provided data. 
-        Do not invent information that is not present in the data.
-        If the data does not contain enough information to answer the question accurately, 
-        state that you do not have sufficient information.
+        with URLs: ${urls}. Also you are an academic expert, you always cite your sources and base your response only on the
+        context that you have been provided.
+
+        Please answer the question: ${question}
         `;
     const res = await client.chat.completions.create({
       messages: [
