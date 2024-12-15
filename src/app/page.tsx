@@ -9,6 +9,7 @@ type Message = {
   content: string;
 };
 
+
 export default function Home() {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<Message[]>([
